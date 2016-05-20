@@ -144,7 +144,7 @@ new Promise(res => {
     });
 
     startRadio(localSettings.cellular);
-    startWifi(localSettings.wifi);
+    //startWifi(localSettings.wifi);
     startAutogrant();
 
     window.dispatchEvent(new CustomEvent('ready', {
@@ -514,7 +514,7 @@ function startAutogrant() {
         var detail = evt.detail;
         switch (detail.type) {
             case 'permission-prompt':
-                writeLine('Autogrant permissions for: ' + detail.permissions);
+                writeLine('Autogrant permissions for: ' + JSON.stringify(detail.permissions));
 
                 var ev2 = document.createEvent('CustomEvent');
                 ev2.initCustomEvent('mozContentEvent', true, true, {
