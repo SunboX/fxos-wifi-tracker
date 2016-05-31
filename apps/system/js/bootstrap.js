@@ -15,6 +15,8 @@
 function writeLine(str) {
     console.log(str);
     document.getElementById('console').textContent += str + "\n";
+    // autoscroll
+    window.scrollBy(0, 100);
 };
 
 new Promise(res => {

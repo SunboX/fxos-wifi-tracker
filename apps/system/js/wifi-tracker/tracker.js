@@ -1,9 +1,14 @@
 var trackerStarted = true;
+var fileStack = [];
+var saving = false;
+var sdcard;
+var isSearching = false;
+var keyTimeout;
 
 navigator.mozPower.keyLightEnabled = true;
 navigator.mozPower.cpuSleepAllowed = false;
 
-window.addEventListener('ready', ev => {
+window.addEventListener('online', ev => {
     var config = ev.detail,
         wifiManager = navigator.mozWifiManager;
 
@@ -19,30 +24,33 @@ window.addEventListener('ready', ev => {
     });
 
     window.addEventListener('keydown', function(e) {
-        if (e.key === 'Power') {
-            writeLine('power off the device');
-            navigator.mozPower.powerOff();
-        }
-        else if (e.key === 'VolumeDown') {
-            writeLine('disable the screen');
-            navigator.mozPower.screenBrightness = 0;
-            navigator.mozPower.screenEnabled = false;
-        }
-        else if (e.key === 'VolumeUp') {
-            if (navigator.mozPower.screenEnabled) {
-                trackerStarted = !trackerStarted;
-                if (trackerStarted) {
-                    writeLine('wifi tracker started');
-                    searchWifi();
-                } else {
-                    writeLine('wifi tracker stopped');
-                }
-                return;
+        clearTimeout(keyTimeout);
+        keyTimeout = setTimeout(() => {
+            if (e.key === 'Power') {
+                writeLine('power off the device');
+                navigator.mozPower.powerOff();
             }
-            writeLine('enable the screen');
-            navigator.mozPower.screenEnabled = true;
-            navigator.mozPower.screenBrightness = 1;
-        }
+            else if (e.key === 'VolumeDown') {
+                writeLine('disable the screen');
+                navigator.mozPower.screenBrightness = 0;
+                navigator.mozPower.screenEnabled = false;
+            }
+            else if (e.key === 'VolumeUp') {
+                if (navigator.mozPower.screenEnabled) {
+                    trackerStarted = !trackerStarted;
+                    if (trackerStarted) {
+                        writeLine('wifi tracker started');
+                        searchWifi();
+                    } else {
+                        writeLine('wifi tracker stopped');
+                    }
+                    return;
+                }
+                writeLine('enable the screen');
+                navigator.mozPower.screenEnabled = true;
+                navigator.mozPower.screenBrightness = 1;
+            }
+        }, 300);
     });
 
     var volumes = navigator.getDeviceStorages('sdcard');
@@ -50,12 +58,16 @@ window.addEventListener('ready', ev => {
     if (volumes.length === 0) {
         writeLine('[storage] No SD card found to store the file!');
     } else if (volumes.length === 1) {
-        var sdcard = volumes[0];
+        sdcard = volumes[0];
 
         function searchWifi () {
             if (!trackerStarted) {
                 return;
             }
+            if (isSearching) {
+                return;
+            }
+            isSearching = true;
             writeLine('[wifi] Getting Wifi infos');
             try {
                 request = wifiManager.getNetworks();
@@ -82,44 +94,41 @@ window.addEventListener('ready', ev => {
 
                                         writeLine('[wifi] SSID: ' + net.ssid + ' (' + net.signalStrength + ')');
 
-                                        try {
-                                            var d = new Date();
-                                            d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
-                                            
-                                            var file = new Blob([JSON.stringify(net)], {
+                                        var d = new Date();
+                                        d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+
+                                        fileStack.push({
+                                            name: 'logs/' + d.toISOString().replace(/[^0-9]/g, '').substr(0, 14) + '_' + net.ssid + '.json',
+                                            blob: new Blob([JSON.stringify(net)], {
                                                 type: 'text/plain'
-                                            });
-                                            var request = sdcard.addNamed(file, 'logs/' + d.toISOString().replace(/[^0-9]/g, '').substr(0, 14) + '_' + net.ssid + '.json');
-                                            request.onsuccess = function() {
-                                                var name = this.result;
-                                                writeLine('[storage] File "' + name + '" successfully wrote on the sdcard storage area');
-                                            };
-                                            request.onerror = function() {
-                                                writeLine('[storage] Unable to write the file: ' + this.error);
-                                            };
-                                        } catch (e) {
-                                            writeLine('[storage] Error storing file: ' + e);
-                                        }
+                                            }),
+                                            errorCount: 0
+                                        });
                                     });
                                     writeLine('[wifi] Done');
 
                                     setTimeout(() => {
-
+                                        isSearching = false;
                                         searchWifi();
-
                                     }, 1000);
                                 }
                             } catch (e) {
                                 utils.log('[geoloc] Error in onGeolocSuccess: ' + e.toString());
 
-                                searchWifi();
+                                setTimeout(() => {
+                                    isSearching = false;
+                                    searchWifi();
+                                }, 1000);
                             }
                         },
                         err => {
                             utils.log('[geoloc] Error: ' + err.code + ' : ' + err.message);
                             utils.log('[geoloc] Aborting.');
 
-                            searchWifi();
+                            setTimeout(() => {
+                                isSearching = false;
+                                searchWifi();
+                            }, 1000);
                         }, {
                             enableHighAccuracy: false,
                             timeout: 1000 * 30,
@@ -129,21 +138,58 @@ window.addEventListener('ready', ev => {
                 request.onerror = () => {
                     writeLine('[wifi] Something goes wrong: ' + request.error.name);
 
-                    searchWifi();
+                    setTimeout(() => {
+                        isSearching = false;
+                        searchWifi();
+                    }, 1000);
                 };
             } catch (e) {
                 writeLine('[wifi] Something goes wrong: ' + e);
 
-                searchWifi();
+                setTimeout(() => {
+                    isSearching = false;
+                    searchWifi();
+                }, 1000);
             }
         }
     }
 
     wifiManager.onenabled = () => {
         setTimeout(() => {
-
+            isSearching = false;
             searchWifi();
-
         }, 1000);
     };
 });
+
+setInterval(() => {
+    if (saving || !sdcard) {
+        return;
+    }
+    if (fileStack.length > 0) {
+        saving = true;
+        var file = fileStack.shift();
+        if (file.errorCount > 5) {
+            saving = false;
+            return;
+        }
+        try {
+            var request = sdcard.addNamed(file.blob, file.name);
+            request.onsuccess = () => {
+                writeLine('[storage] File "' + request.result + '" successfully wrote on the sdcard storage area');
+                saving = false;
+            };
+            request.onerror = () => {
+                file.errorCount++;
+                fileStack.push(file);
+                writeLine('[storage] Unable to write the file, error count ' + file.errorCount + ', file: ' + file.name + ', error: ' + JSON.stringify(request.error));
+                saving = false;
+            };
+        } catch (e) {
+            file.errorCount++;
+            fileStack.push(file);
+            writeLine('[storage] Error storing file: ' + JSON.stringify(e));
+            saving = false;
+        }
+    }                              
+}, 1000)
